@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CIED Perioperative Management Assistant</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; background: #0f172a; }
+        .gradient-text { background: linear-gradient(135deg, #60a5fa 0%, #a78bfa 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .glass-panel { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.1); }
+        .step-active { border-color: #60a5fa; background: rgba(96, 165, 250, 0.1); }
+        .pulse-ring { animation: pulse-ring 2s cubic-bezier(0.215, 0.61, 0.355, 1) infinite; }
+        @keyframes pulse-ring { 0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(96, 165, 250, 0.7); } 70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(96, 165, 250, 0); } 100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(96, 165, 250, 0); } }
+        .recommendation-card { transition: all 0.3s ease; border-left: 4px solid transparent; }
+        .recommendation-card:hover { transform: translateX(4px); border-left-color: #60a5fa; }
+        .urgent { border-left-color: #ef4444 !important; background: rgba(239, 68, 68, 0.1); }
+        .warning { border-left-color: #f59e0b !important; background: rgba(245, 158, 11, 0.1); }
+        .success { border-left-color: #10b981 !important; background: rgba(16, 185, 129, 0.1); }
+        .info { border-left-color: #3b82f6 !important; background: rgba(59, 130, 246, 0.1); }
+    </style>
+</head>
+<body class="text-slate-200 min-h-screen">
+    <div id="root"></div>
+
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        // Clinical Decision Logic based on AHA 2024, ASA, HRS guidelines
+        const CIED_GUIDELINES = {
+            devices: {
+                PPM: { name: "Permanent Pacemaker (PPM)", hasShock: false, hasPacing: true },
+                ICD: { name: "Implantable Cardioverter-Defibrillator (ICD)", hasShock: true, hasPacing: true },
+                CRT_P: { name: "CRT-Pacemaker (CRT-P)", hasShock: false, hasPacing: true, isCRT: true },
+                CRT_D: { name: "CRT-Defibrillator (CRT-D)", hasShock: true, hasPacing: true, isCRT: true },
+                SUBCUT_ICD: { name: "Subcutaneous ICD (S-ICD)", hasShock: true, hasPacing: false, noTransvenous: true },
+                LEADLESS_PM: { name: "Leadless Pacemaker", hasShock: false, hasPacing: true, leadless: true, noMagnetResponse: true },
+                ILR: { name: "Implantable Loop Recorder (ILR)", hasShock: false, hasPacing: false, monitorOnly: true }
+            },
+            
+            surgeryLocations: {
+                ABOVE_UMBILICUS: { risk: "HIGH", name: "Above Umbilicus (Thoracic/Head/Neck/Upper Abdomen)" },
+                BELOW_UMBILICUS: { risk: "LOW", name: "Below Umbilicus (Lower Abdomen/Pelvis/Extremities)" },
+                CARDIAC: { risk: "VERY_HIGH", name: "Cardiac/Intrathoracic" },
+                OCULAR: { risk: "MODERATE", name: "Ocular/Intraocular" }
+            },
+
+            emiSources: {
+                MONOPOLAR_ESU: { risk: "HIGH", name: "Monopolar Electrosurgery (ESU)" },
+                BIPOLAR_ESU: { risk: "LOW", name: "Bipolar Electrosurgery" },
+                RF_ABLATION: { risk: "HIGH", name: "Radiofrequency Ablation" },
+                LITHOTRIPSY: { risk: "MODERATE", name: "Lithotripsy" },
+                MRI: { risk: "CONTRAINDICATED", name: "MRI (Generally Contraindicated)" },
+                TENS: { risk: "LOW", name: "TENS/Nerve Stimulator" },
+                NONE: { risk: "NONE", name: "No EMI Source Expected" }
+            }
+        };
+
+        const AssessmentWizard = () => {
+            const [step, setStep] = useState(1);
+            const [assessment, setAssessment] = useState({
+                deviceType: '',
+                pacingDependent: null,
+                surgeryLocation: '',
+                emiSource: '',
+                emergency: false,
+                lastInterrogation: '',
+                patientPositioning: ''
+            });
+            const [recommendations, setRecommendations] = useState([]);
+            const [showResults, setShowResults] = useState(false);
+
+            const updateAssessment = (key, value) => {
+                setAssessment(prev => ({ ...prev, [key]: value }));
+            };
+
+            const generateRecommendations = () => {
+                const recs = [];
+                const device = CIED_GUIDELINES.devices[assessment.deviceType];
+                const location = CIED_GUIDELINES.surgeryLocations[assessment.surgeryLocation];
+                const emi = CIED_GUIDELINES.emiSources[assessment.emiSource];
+
+                // PREOPERATIVE RECOMMENDATIONS
+                recs.push({
+                    phase: "Preoperative",
+                    priority: "CRITICAL",
+                    title: "Device Interrogation Required",
+                    content: `Interrogate device within ${device?.hasShock ? '6 months (ICD/CRT-D)' : '12 months (PPM)'} prior to surgery. Verify battery status, sensing thresholds, and capture thresholds.`,
+                    rationale: "AHA 2024 Guidelines [^6^]",
+                    type: "urgent"
+                });
+
+                if (assessment.pacingDependent) {
+                    recs.push({
+                        phase: "Preoperative",
+                        priority: "HIGH",
+                        title: "Pacing Dependency Confirmed",
+                        content: "Patient is pacing-dependent. Risk of asystole with EMI-induced oversensing. Consider reprogramming to asynchronous mode (VOO/DOO) or magnet application for PMs.",
+                        rationale: "ASA Practice Advisory [^2^]",
+                        type: "warning"
+                    });
+                }
+
+                // INTRAOPERATIVE RECOMMENDATIONS based on EMI risk
+                if (emi.risk === "HIGH" || emi.risk === "VERY_HIGH") {
+                    if (device?.hasShock) {
+                        recs.push({
+                            phase: "Intraoperative",
+                            priority: "CRITICAL",
+                            title: "Suspend Antitachyarrhythmia Therapy",
+                            content: "Reprogram ICD to suspend shock therapy (ATP/shocks) OR apply magnet. Note: Magnet disables shocks but does NOT change pacing mode in ICDs.",
+                            rationale: "AHA Scientific Statement 2024 [^6^]",
+                            type: "urgent"
+                        });
+                    }
+
+                    if (assessment.pacingDependent && device?.hasPacing) {
+                        if (device.hasShock) {
+                            recs.push({
+                                phase: "Intraoperative",
+                                priority: "CRITICAL",
+                                title: "Asynchronous Pacing Required (ICD Patient)",
+                                content: "ICD patients who are pacing-dependent MUST be reprogrammed to asynchronous mode (VOO/DOO). Magnet will NOT provide asynchronous pacing in ICDs.",
+                                rationale: "Critical Safety Alert - ASA/HRS Guidelines",
+                                type: "urgent"
+                            });
+                        } else {
+                            recs.push({
+                                phase: "Intraoperative",
+                                priority: "HIGH",
+                                title: "Magnet or Asynchronous Mode",
+                                content: "Apply magnet for asynchronous pacing (fixed rate) OR reprogram to VOO/DOO mode. Verify magnet response preoperatively.",
+                                rationale: "AHA 2024 [^6^]",
+                                type: "warning"
+                            });
+                        }
+                    }
+
+                    recs.push({
+                        phase: "Intraoperative",
+                        priority: "HIGH",
+                        title: "Transcutaneous Pads Placement",
+                        content: "Place defib/pacing pads in anteroposterior position, ≥8-15cm from device generator. Never place directly over device.",
+                        rationale: "Multisociety Guidelines",
+                        type: "warning"
+                    });
+
+                    if (emi.risk === "HIGH") {
+                        recs.push({
+                            phase: "Intraoperative",
+                            priority: "MEDIUM",
+                            title: "ESU Risk Mitigation",
+                            content: "Use bipolar cautery if possible. If monopolar: position return electrode so current path avoids CIED/leads, use short bursts (<5s), lowest feasible energy.",
+                            rationale: "ASA Practice Advisory [^2^]",
+                            type: "info"
+                        });
+                    }
+                }
+
+                if (device?.leadless) {
+                    recs.push({
+                        phase: "Intraoperative",
+                        priority: "HIGH",
+                        title: "Leadless Pacemaker Specific",
+                        content: "Leadless PMs (e.g., Micra) do NOT respond to magnets. Must use programmer for any mode changes. No transvenous lead dislodgement risk.",
+                        rationale: "Device-specific guideline",
+                        type: "warning"
+                    });
+                }
+
+                if (device?.noTransvenous && assessment.pacingDependent) {
+                    recs.push({
+                        phase: "Preoperative",
+                        priority: "CRITICAL",
+                        title: "Subcutaneous ICD + Pacing Dependence",
+                        content: "S-ICD provides no pacing support. If patient is bradycardic/pacing-dependent, arrange for temporary transvenous pacing or alternative.",
+                        rationale: "Device limitation",
+                        type: "urgent"
+                    });
+                }
+
+                // POSTOPERATIVE
+                if (emi.risk !== "NONE" || device?.hasShock) {
+                    recs.push({
+                        phase: "Postoperative",
+                        priority: "HIGH",
+                        title: "Device Restoration",
+                        content: "Reactivate all suspended therapies (shocks, ATP) and restore original settings before leaving monitored care. Interrogate device if significant EMI exposure occurred.",
+                        rationale: "AHA 2024 [^6^]",
+                        type: "success"
+                    });
+                }
+
+                if (location.risk === "LOW" && emi.risk === "NONE") {
+                    recs.push({
+                        phase: "All Phases",
+                        priority: "LOW",
+                        title: "Standard Monitoring",
+                        content: "Surgery below umbilicus without EMI: Routine monitoring sufficient. No reprogramming typically necessary.",
+                        rationale: "Low risk category",
+                        type: "success"
+                    });
+                }
+
+                setRecommendations(recs);
+                setShowResults(true);
+            };
+
+            const reset = () => {
+                setStep(1);
+                setAssessment({
+                    deviceType: '',
+                    pacingDependent: null,
+                    surgeryLocation: '',
+                    emiSource: '',
+                    emergency: false,
+                    lastInterrogation: '',
+                    patientPositioning: ''
+                });
+                setShowResults(false);
+                setRecommendations([]);
+            };
+
+            const renderStep = () => {
+                switch(step) {
+                    case 1:
+                        return (
+                            <div className="space-y-6 animate-fadeIn">
+                                <h2 className="text-2xl font-bold text-white mb-4">Device Identification</h2>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    {Object.entries(CIED_GUIDELINES.devices).map(([key, device]) => (
+                                        <button
+                                            key={key}
+                                            onClick={() => { updateAssessment('deviceType', key); setStep(2); }}
+                                            className={`p-4 rounded-xl text-left transition-all ${assessment.deviceType === key ? 'step-active' : 'glass-panel hover:bg-slate-700'}`}
+                                        >
+                                            <div className="font-semibold text-white">{device.name}</div>
+                                            <div className="text-sm text-slate-400 mt-1">
+                                                {device.hasShock && "⚡ Shock therapy "}
+                                                {device.hasPacing && "💓 Pacing "}
+                                                {device.leadless && "📍 Leadless "}
+                                            </div>
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        );
+                    case 2:
+                        return (
+                            <div className="space-y-6 animate-fadeIn">
+                                <h2 className="text-2xl font-bold text-white mb-4">Pacing Dependency</h2>
+                                <p className="text-slate-400 mb-4">Is the patient pacing-dependent? (History of symptomatic bradycardia, AV nodal ablation, or no escape rhythm)</p>
+                                <div className="grid grid-cols-1 gap-4">
+                                    <button
+                                        onClick={() => { updateAssessment('pacingDependent', true); setStep(3); }}
+                                        className={`p-6 rounded-xl text-left transition-all ${assessment.pacingDependent === true ? 'step-active' : 'glass-panel hover:bg-slate-700'}`}
+                                    >
+                                        <div className="font-bold text-red-400 text-lg">Yes - Pacing Dependent</div>
+                                        <div className="text-sm text-slate-400 mt-2">History of symptomatic bradycardia, inadequate escape rhythm, or AV nodal ablation</div>
+                                    </button>
+                                    <button
+                                        onClick={() => { updateAssessment('pacingDependent', false); setStep(3); }}
+                                        className={`p-6 rounded-xl text-left transition-all ${assessment.pacingDependent === false ? 'step-active' : 'glass-panel hover:bg-slate-700'}`}
+                                    >
+                                        <div className="font-bold text-emerald-400 text-lg">No - Not Pacing Dependent</div>
+                                        <div className="text-sm text-slate-400 mt-2">Intrinsic rhythm adequate, backup pacing only</div>
+                                    </button>
+                                </div>
+                                <button onClick={() => setStep(1)} className="text-slate-400 hover:text-white mt-4">← Back</button>
+                            </div>
+                        );
+                    case 3:
+                        return (
+                            <div className="space-y-6 animate-fadeIn">
+                                <h2 className="text-2xl font-bold text-white mb-4">Surgical Procedure</h2>
+                                <div className="space-y-4">
+                                    {Object.entries(CIED_GUIDELINES.surgeryLocations).map(([key, loc]) => (
+                                        <button
+                                            key={key}
+                                            onClick={() => { updateAssessment('surgeryLocation', key); setStep(4); }}
+                                            className={`w-full p-4 rounded-xl text-left transition-all ${assessment.surgeryLocation === key ? 'step-active' : 'glass-panel hover:bg-slate-700'}`}
+                                        >
+                                            <div className="flex justify-between items-center">
+                                                <span className="font-semibold text-white">{loc.name}</span>
+                                                <span className={`px-3 py-1 rounded-full text-xs font-bold ${
+                                                    loc.risk === 'VERY_HIGH' ? 'bg-red-500/20 text-red-400' :
+                                                    loc.risk === 'HIGH' ? 'bg-orange-500/20 text-orange-400' :
+                                                    loc.risk === 'MODERATE' ? 'bg-yellow-500/20 text-yellow-400' :
+                                                    'bg-emerald-500/20 text-emerald-400'
+                                                }`}>
+                                                    {loc.risk} RISK
+                                                </span>
+                                            </div>
+                                        </button>
+                                    ))}
+                                </div>
+                                <button onClick={() => setStep(2)} className="text-slate-400 hover:text-white mt-4">← Back</button>
+                            </div>
+                        );
+                    case 4:
+                        return (
+                            <div className="space-y-6 animate-fadeIn">
+                                <h2 className="text-2xl font-bold text-white mb-4">EMI Source</h2>
+                                <p className="text-slate-400 mb-4">What electromagnetic interference sources are anticipated?</p>
+                                <div className="grid grid-cols-1 gap-3">
+                                    {Object.entries(CIED_GUIDELINES.emiSources).map(([key, emi]) => (
+                                        <button
+                                            key={key}
+                                            onClick={() => { updateAssessment('emiSource', key); setStep(5); }}
+                                            className={`p-4 rounded-xl text-left transition-all flex justify-between items-center ${assessment.emiSource === key ? 'step-active' : 'glass-panel hover:bg-slate-700'}`}
+                                        >
+                                            <span className="font-medium text-white">{emi.name}</span>
+                                            {emi.risk !== 'NONE' && (
+                                                <span className={`px-3 py-1 rounded-full text-xs ${
+                                                    emi.risk === 'CONTRAINDICATED' ? 'bg-red-500/20 text-red-400' :
+                                                    emi.risk === 'HIGH' ? 'bg-orange-500/20 text-orange-400' :
+                                                    'bg-blue-500/20 text-blue-400'
+                                                }`}>
+                                                    {emi.risk}
+                                                </span>
+                                            )}
+                                        </button>
+                                    ))}
+                                </div>
+                                <button onClick={() => setStep(3)} className="text-slate-400 hover:text-white mt-4">← Back</button>
+                            </div>
+                        );
+                    case 5:
+                        return (
+                            <div className="space-y-6 animate-fadeIn">
+                                <h2 className="text-2xl font-bold text-white mb-4">Emergency Procedure?</h2>
+                                <div className="grid grid-cols-1 gap-4">
+                                    <button
+                                        onClick={() => { updateAssessment('emergency', true); generateRecommendations(); }}
+                                        className="p-6 rounded-xl glass-panel hover:bg-red-900/20 border border-red-500/30 transition-all"
+                                    >
+                                        <div className="font-bold text-red-400 text-lg flex items-center gap-2">
+                                            <i data-lucide="alert-triangle" className="w-5 h-5"></i>
+                                            Emergency Surgery
+                                        </div>
+                                        <div className="text-sm text-slate-400 mt-2">No time for preoperative interrogation</div>
+                                    </button>
+                                    <button
+                                        onClick={() => { updateAssessment('emergency', false); generateRecommendations(); }}
+                                        className="p-6 rounded-xl glass-panel hover:bg-emerald-900/20 border border-emerald-500/30 transition-all"
+                                    >
+                                        <div className="font-bold text-emerald-400 text-lg">Elective Surgery</div>
+                                        <div className="text-sm text-slate-400 mt-2">Standard preoperative evaluation possible</div>
+                                    </button>
+                                </div>
+                                <button onClick={() => setStep(4)} className="text-slate-400 hover:text-white mt-4">← Back</button>
+                            </div>
+                        );
+                    default:
+                        return null;
+                }
+            };
+
+            if (showResults) {
+                return (
+                    <div className="max-w-4xl mx-auto p-6 animate-fadeIn">
+                        <div className="flex justify-between items-center mb-8">
+                            <h2 className="text-3xl font-bold gradient-text">Clinical Recommendations</h2>
+                            <button onClick={reset} className="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-white text-sm font-medium transition-colors">
+                                New Assessment
+                            </button>
+                        </div>
+
+                        <div className="glass-panel rounded-2xl p-6 mb-6">
+                            <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+                                <i data-lucide="clipboard-list" className="w-5 h-5 text-blue-400"></i>
+                                Patient Summary
+                            </h3>
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                                <div className="bg-slate-800/50 p-3 rounded-lg">
+                                    <div className="text-slate-400">Device</div>
+                                    <div className="text-white font-medium">{CIED_GUIDELINES.devices[assessment.deviceType]?.name}</div>
+                                </div>
+                                <div className="bg-slate-800/50 p-3 rounded-lg">
+                                    <div className="text-slate-400">Pacing Dependent</div>
+                                    <div className={`font-medium ${assessment.pacingDependent ? 'text-red-400' : 'text-emerald-400'}`}>
+                                        {assessment.pacingDependent ? 'Yes' : 'No'}
+                                    </div>
+                                </div>
+                                <div className="bg-slate-800/50 p-3 rounded-lg">
+                                    <div className="text-slate-400">Surgery Location</div>
+                                    <div className="text-white font-medium">{CIED_GUIDELINES.surgeryLocations[assessment.surgeryLocation]?.name}</div>
+                                </div>
+                                <div className="bg-slate-800/50 p-3 rounded-lg">
+                                    <div className="text-slate-400">EMI Source</div>
+                                    <div className="text-white font-medium">{CIED_GUIDELINES.emiSources[assessment.emiSource]?.name}</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="space-y-4">
+                            {['Preoperative', 'Intraoperative', 'Postoperative', 'All Phases'].map(phase => {
+                                const phaseRecs = recommendations.filter(r => r.phase === phase);
+                                if (phaseRecs.length === 0) return null;
+                                
+                                return (
+                                    <div key={phase} className="space-y-3">
+                                        <h3 className="text-lg font-semibold text-slate-300 uppercase tracking-wider ml-2">{phase}</h3>
+                                        {phaseRecs.map((rec, idx) => (
+                                            <div key={idx} className={`recommendation-card glass-panel rounded-xl p-5 ${rec.type}`}>
+                                                <div className="flex justify-between items-start mb-2">
+                                                    <h4 className="font-bold text-white text-lg">{rec.title}</h4>
+                                                    <span className={`px-3 py-1 rounded-full text-xs font-bold ${
+                                                        rec.priority === 'CRITICAL' ? 'bg-red-500/20 text-red-400' :
+                                                        rec.priority === 'HIGH' ? 'bg-orange-500/20 text-orange-400' :
+                                                        'bg-blue-500/20 text-blue-400'
+                                                    }`}>
+                                                        {rec.priority}
+                                                    </span>
+                                                </div>
+                                                <p className="text-slate-300 mb-3 leading-relaxed">{rec.content}</p>
+                                                <div className="text-xs text-slate-500 flex items-center gap-1">
+                                                    <i data-lucide="book-open" className="w-3 h-3"></i>
+                                                    Source: {rec.rationale}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                );
+                            })}
+                        </div>
+
+                        <div className="mt-8 p-4 bg-slate-800/50 rounded-xl border border-slate-700 text-sm text-slate-400">
+                            <p className="flex items-center gap-2 mb-2">
+                                <i data-lucide="info" className="w-4 h-4"></i>
+                                <strong>Disclaimer:</strong> This tool provides decision support based on published guidelines (AHA 2024, ASA, HRS). 
+                            </p>
+                            <p>Always consult with the patient's electrophysiologist/cardiology team for individualized management. Verify device-specific magnet responses and programming capabilities.</p>
+                        </div>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="max-w-2xl mx-auto p-6">
+                    <div className="mb-8 text-center">
+                        <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-blue-500/20 mb-4 pulse-ring">
+                            <i data-lucide="heart-pulse" className="w-8 h-8 text-blue-400"></i>
+                        </div>
+                        <h1 className="text-3xl font-bold text-white mb-2">CIED Perioperative Assistant</h1>
+                        <p className="text-slate-400">Evidence-based management for cardiac implantable electronic devices</p>
+                    </div>
+
+                    <div className="glass-panel rounded-2xl p-8">
+                        <div className="flex justify-between mb-6 text-sm text-slate-500">
+                            <span>Step {step} of 5</span>
+                            <span>{Math.round((step / 5) * 100)}% Complete</span>
+                        </div>
+                        <div className="w-full bg-slate-700 h-2 rounded-full mb-8">
+                            <div 
+                                className="bg-blue-500 h-2 rounded-full transition-all duration-500" 
+                                style={{ width: `${(step / 5) * 100}%` }}
+                            ></div>
+                        </div>
+                        
+                        {renderStep()}
+                    </div>
+
+                    <div className="mt-8 grid grid-cols-3 gap-4 text-center text-xs text-slate-500">
+                        <div className="p-3 rounded-lg bg-slate-800/30">
+                            <div className="font-semibold text-slate-400 mb-1">AHA 2024</div>
+                            <div>Scientific Statement</div>
+                        </div>
+                        <div className="p-3 rounded-lg bg-slate-800/30">
+                            <div className="font-semibold text-slate-400 mb-1">ASA</div>
+                            <div>Practice Advisory</div>
+                        </div>
+                        <div className="p-3 rounded-lg bg-slate-800/30">
+                            <div className="font-semibold text-slate-400 mb-1">HRS</div>
+                            <div>Expert Consensus</div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const App = () => {
+            useEffect(() => {
+                if (window.lucide) {
+                    window.lucide.createIcons();
+                }
+            }, []);
+
+            return (
+                <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 py-8 px-4">
+                    <AssessmentWizard />
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
