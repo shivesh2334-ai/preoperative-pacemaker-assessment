@@ -1,0 +1,8 @@
+{
+  "name": "cied-perioperative-assistant",
+  "version": "1.0.0",
+  "description": "Clinical decision support for cardiac implantable electronic device perioperative management",
+  "scripts": {
+    "deploy": "vercel --prod"
+  }
+}
